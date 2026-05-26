@@ -117,7 +117,7 @@ export default function Home() {
 
     const skinRatio = skinPixels / total
     // If > 55% of nose zone is skin = hand covering nose
-    const nowClosed = skinRatio > 0.55
+    const nowClosed = skinRatio > 0.25
     noseClosed.current = nowClosed
 
     if (nowClosed !== lastNoseState.current) {
@@ -136,7 +136,7 @@ export default function Home() {
       id: ++catIdCounter,
       x: Math.random() * 80 + 10,
       y: Math.random() * 70 + 10,
-      size: 80 + Math.random() * 60,
+      size: 160 + Math.random() * 100,
       vx: (Math.random() - 0.5) * 0.4,
       vy: (Math.random() - 0.5) * 0.4,
       rotation: Math.random() * 360,
