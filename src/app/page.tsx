@@ -19,8 +19,8 @@ interface CatInstance {
 let catIdCounter = 0
 
 // Sensitivity – adjust if needed
-const MOTION_THRESH = 12       // Motion above this = hand moving
-const STILL_THRESH = 4         // Motion below this = hand held still
+const MOTION_THRESH = 20       // Motion above this = hand moving
+const STILL_THRESH = 10         // Motion below this = hand held still
 const STABLE_FRAMES_REQUIRED = 6  // How many frames of stillness to confirm "closed"
 
 type GestureState = 'waiting_cover' | 'covered' | 'waiting_open'
