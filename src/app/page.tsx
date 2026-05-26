@@ -25,14 +25,17 @@ export default function Home() {
   const catsRef = useRef<CatInstance[]>([])
   const isActiveRef = useRef(false)
   const lastNoseState = useRef(false)
-  const baselineSkin = useRef<number | null>(null)
-  const calibrationFrames = useRef(0)
+  const prevFrameData = useRef<Uint8ClampedArray | null>(null)
+  const motionHistory = useRef<number[]>([])
+  const stableFrames = useRef(0)
 
   const [isActive, setIsActive] = useState(false)
   const [cats, setCats] = useState<CatInstance[]>([])
   const [flashColor, setFlashColor] = useState<string | null>(null)
   const [facing, setFacing] = useState<'user' | 'environment'>('user')
   const [beatPulse, setBeatPulse] = useState(false)
+  const [debugInfo, setDebugInfo] = useState({ motion: 0, stable: 0, state: 'waiting' })
+  const showDebug = false // set true to troubleshoot
 
   const startCamera = useCallback(async (facingMode: 'user' | 'environment') => {
     try {
@@ -103,7 +106,7 @@ export default function Home() {
     setCats([])
   }, [])
 
-  // Detection — all refs, no stale closure issue
+  // ─── MOTION DETECTION (works with glasses, any skin tone, any lighting) ────
   useEffect(() => {
     const interval = setInterval(() => {
       const video = videoRef.current
@@ -113,65 +116,88 @@ export default function Home() {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) return
 
-      canvas.width = video.videoWidth || 640
-      canvas.height = video.videoHeight || 480
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
+      // Use small canvas for speed
+      canvas.width = 80
+      canvas.height = 120
 
-      const w = canvas.width
-      const h = canvas.height
-      // Sample the nose/hand zone: center horizontally, upper-middle vertically
-      const rx = Math.floor(w * 0.30)
-      const ry = Math.floor(h * 0.33)
-      const rw = Math.floor(w * 0.40)
-      const rh = Math.floor(h * 0.25)
+      ctx.drawImage(video, 0, 0, 80, 120)
 
+      // Sample center zone where nose/hand would be
+      // x: 25%-75% of width, y: 30%-65% of height
+      const rx = 20, ry = 36, rw = 40, rh = 36
       let imageData: ImageData
       try {
         imageData = ctx.getImageData(rx, ry, rw, rh)
       } catch { return }
 
-      const data = imageData.data
-      let brightness = 0
-      const total = data.length / 4
-      for (let i = 0; i < data.length; i += 4) {
-        brightness += (data[i] + data[i + 1] + data[i + 2]) / 3
-      }
-      const avgBrightness = brightness / total
+      const current = imageData.data
 
-      // Calibrate first 40 frames
-      if (calibrationFrames.current < 40) {
-        calibrationFrames.current++
-        if (baselineSkin.current === null) {
-          baselineSkin.current = avgBrightness
-        } else {
-          baselineSkin.current = baselineSkin.current * 0.85 + avgBrightness * 0.15
-        }
+      if (!prevFrameData.current || prevFrameData.current.length !== current.length) {
+        prevFrameData.current = new Uint8ClampedArray(current)
         return
       }
 
-      const baseline = baselineSkin.current ?? avgBrightness
-      // Trigger if brightness drops 25 below baseline (hand covering nose)
-      const nowClosed = avgBrightness < baseline - 25
+      // Calculate pixel difference between frames
+      const prev = prevFrameData.current
+      let diff = 0
+      const total = current.length / 4
 
-      // Slowly drift baseline when idle
-      if (!nowClosed) {
-        baselineSkin.current = baseline * 0.97 + avgBrightness * 0.03
+      for (let i = 0; i < current.length; i += 4) {
+        const dr = Math.abs(current[i] - prev[i])
+        const dg = Math.abs(current[i + 1] - prev[i + 1])
+        const db = Math.abs(current[i + 2] - prev[i + 2])
+        diff += (dr + dg + db) / 3
       }
 
-      if (nowClosed && !lastNoseState.current) {
-        lastNoseState.current = true
-        activateCats()
-      } else if (!nowClosed && lastNoseState.current) {
-        lastNoseState.current = false
-        deactivateCats()
-        // Reset for next person
-        baselineSkin.current = null
-        calibrationFrames.current = 0
+      const avgMotion = diff / total
+
+      // Save current frame
+      prevFrameData.current = new Uint8ClampedArray(current)
+
+      // Rolling average of last 5 frames
+      motionHistory.current.push(avgMotion)
+      if (motionHistory.current.length > 5) motionHistory.current.shift()
+      const smoothMotion = motionHistory.current.reduce((a, b) => a + b, 0) / motionHistory.current.length
+
+      // Debug
+      if (showDebug) {
+        setDebugInfo({ motion: Math.round(smoothMotion), stable: stableFrames.current, state: lastNoseState.current ? 'COVERED' : 'open' })
+      }
+
+      // Logic:
+      // - HIGH motion (>12) = hand moving in front → covered
+      // - LOW motion (<4) for 8+ frames = stable = hand removed or not there
+      //
+      // This detects the GESTURE of bringing hand to nose and holding still
+
+      if (!lastNoseState.current) {
+        // Currently NOT covered
+        if (smoothMotion > 12) {
+          // Hand moving in = activate immediately
+          stableFrames.current = 0
+          lastNoseState.current = true
+          activateCats()
+        }
+      } else {
+        // Currently COVERED
+        if (smoothMotion < 4) {
+          stableFrames.current++
+          // Must be still for 10 frames (~800ms) to confirm hand removed
+          if (stableFrames.current > 10) {
+            lastNoseState.current = false
+            stableFrames.current = 0
+            deactivateCats()
+            prevFrameData.current = null
+            motionHistory.current = []
+          }
+        } else {
+          stableFrames.current = 0
+        }
       }
     }, 80)
 
     return () => clearInterval(interval)
-  }, [activateCats, deactivateCats])
+  }, [activateCats, deactivateCats, showDebug])
 
   // Animate cats
   useEffect(() => {
@@ -191,9 +217,7 @@ export default function Home() {
 
       catsRef.current = catsRef.current.map(cat => {
         let { x, y, vx, vy, rotation, rotSpeed, scale, scaleDir } = cat
-        x += vx
-        y += vy
-        rotation += rotSpeed
+        x += vx; y += vy; rotation += rotSpeed
         if (x < 5 || x > 88) vx *= -1
         if (y < 5 || y > 85) vy *= -1
         x = Math.max(5, Math.min(88, x))
@@ -208,9 +232,7 @@ export default function Home() {
       frame = requestAnimationFrame(animate)
     }
 
-    if (isActive) {
-      frame = requestAnimationFrame(animate)
-    }
+    if (isActive) frame = requestAnimationFrame(animate)
     return () => cancelAnimationFrame(frame)
   }, [isActive, spawnCats])
 
@@ -218,11 +240,9 @@ export default function Home() {
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
-    const handleTimeUpdate = () => {
-      if (audio.currentTime >= 14) audio.currentTime = 4
-    }
-    audio.addEventListener('timeupdate', handleTimeUpdate)
-    return () => audio.removeEventListener('timeupdate', handleTimeUpdate)
+    const fn = () => { if (audio.currentTime >= 14) audio.currentTime = 4 }
+    audio.addEventListener('timeupdate', fn)
+    return () => audio.removeEventListener('timeupdate', fn)
   }, [])
 
   return (
@@ -242,6 +262,14 @@ export default function Home() {
         {flashColor && <div className="flash" style={{ background: flashColor }} />}
         <div className={`cam-border ${isActive ? 'active' : ''} ${beatPulse ? 'beat' : ''}`} />
 
+        {/* Detection zone indicator */}
+        {!isActive && (
+          <div className="nose-guide">
+            <div className="nose-box" />
+            <span className="nose-label">👃 taruh tangan di sini</span>
+          </div>
+        )}
+
         {cats.map(cat => (
           <div
             key={cat.id}
@@ -257,6 +285,19 @@ export default function Home() {
             <video src="/cat.webm" autoPlay loop muted playsInline className="cat-video" />
           </div>
         ))}
+
+        {/* Debug overlay */}
+        {showDebug && (
+          <div style={{
+            position: 'absolute', bottom: 70, left: 10, zIndex: 99,
+            background: 'rgba(0,0,0,0.75)', color: 'lime', fontSize: 11,
+            padding: '6px 10px', borderRadius: 8, fontFamily: 'monospace'
+          }}>
+            <div>motion: {debugInfo.motion}</div>
+            <div>stable: {debugInfo.stable}/10</div>
+            <div>state: {debugInfo.state}</div>
+          </div>
+        )}
 
         <button className="flip-btn" onClick={() => setFacing(f => f === 'user' ? 'environment' : 'user')}>
           <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
@@ -285,10 +326,8 @@ export default function Home() {
 
       <style jsx>{`
         .root {
-          position: fixed; inset: 0;
-          background: #0a0a0f;
-          display: flex; align-items: center; justify-content: center;
-          overflow: hidden;
+          position: fixed; inset: 0; background: #0a0a0f;
+          display: flex; align-items: center; justify-content: center; overflow: hidden;
         }
         .stars {
           position: absolute; inset: 0; pointer-events: none;
@@ -300,14 +339,12 @@ export default function Home() {
             radial-gradient(2px 2px at 90% 40%, rgba(255,45,120,0.3) 0%, transparent 100%);
         }
         .cam-wrap {
-          position: relative;
-          width: min(420px, 94vw); height: min(750px, 88vh);
+          position: relative; width: min(420px, 94vw); height: min(750px, 88vh);
           border-radius: 28px; overflow: hidden;
           box-shadow: 0 0 0 2px rgba(255,45,120,0.3), 0 0 40px rgba(255,45,120,0.2), 0 20px 60px rgba(0,0,0,0.7);
         }
         .cam-video {
-          position: absolute; inset: 0;
-          width: 100%; height: 100%; object-fit: cover;
+          position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
         }
         .flash {
           position: absolute; inset: 0; z-index: 10; pointer-events: none;
@@ -326,6 +363,27 @@ export default function Home() {
         .cam-border.active.beat {
           box-shadow: inset 0 0 50px rgba(255,45,120,0.45), 0 0 60px rgba(255,45,120,0.8);
         }
+        .nose-guide {
+          position: absolute; top: 30%; left: 25%; width: 50%; height: 25%;
+          z-index: 8; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 8px;
+        }
+        .nose-box {
+          width: 100%; height: 100%;
+          border: 2px dashed rgba(0,255,225,0.5);
+          border-radius: 12px;
+          box-shadow: inset 0 0 20px rgba(0,255,225,0.05);
+          animation: nosePulse 2s ease-in-out infinite;
+        }
+        @keyframes nosePulse {
+          0%, 100% { border-color: rgba(0,255,225,0.3); }
+          50% { border-color: rgba(0,255,225,0.8); }
+        }
+        .nose-label {
+          position: absolute; bottom: -26px;
+          color: rgba(0,255,225,0.7); font-size: 11px;
+          white-space: nowrap; letter-spacing: 0.05em;
+        }
         .cat-wrap {
           position: absolute; transform-origin: center center;
           z-index: 20; pointer-events: none;
@@ -340,7 +398,7 @@ export default function Home() {
           display: flex; align-items: center; justify-content: center;
           transition: background 0.2s, transform 0.15s;
         }
-        .flip-btn:active { transform: scale(0.9); background: rgba(255,255,255,0.25); }
+        .flip-btn:active { transform: scale(0.9); }
         .status-badge {
           position: fixed; top: 18px; left: 50%; transform: translateX(-50%);
           padding: 8px 20px; border-radius: 999px;
