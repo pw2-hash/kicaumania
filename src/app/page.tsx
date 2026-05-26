@@ -18,23 +18,26 @@ interface CatInstance {
 
 let catIdCounter = 0
 
+// Sensitivity configuration – adjust these if needed
+const MOTION_THRESH = 10       // Lower = more sensitive, higher = less sensitive
+const COOLDOWN_MS = 500        // Milliseconds to wait before allowing another toggle
+
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
   const catsRef = useRef<CatInstance[]>([])
   const isActiveRef = useRef(false)
-  const lastNoseState = useRef(false)
   const prevFrameData = useRef<Uint8ClampedArray | null>(null)
   const motionHistory = useRef<number[]>([])
-  const stableFrames = useRef(0)
+  const lastToggleTime = useRef(0)
 
   const [isActive, setIsActive] = useState(false)
   const [cats, setCats] = useState<CatInstance[]>([])
   const [flashColor, setFlashColor] = useState<string | null>(null)
   const [facing, setFacing] = useState<'user' | 'environment'>('user')
   const [beatPulse, setBeatPulse] = useState(false)
-  const [debugInfo, setDebugInfo] = useState({ motion: 0, stable: 0, state: 'waiting' })
+  const [debugInfo, setDebugInfo] = useState({ motion: 0, state: 'waiting' })
   const showDebug = false // set true to troubleshoot
 
   const startCamera = useCallback(async (facingMode: 'user' | 'environment') => {
@@ -99,6 +102,7 @@ export default function Home() {
   }, [spawnCats])
 
   const deactivateCats = useCallback(() => {
+    if (!isActiveRef.current) return
     isActiveRef.current = false
     setIsActive(false)
     audioRef.current?.pause()
@@ -106,7 +110,7 @@ export default function Home() {
     setCats([])
   }, [])
 
-  // ─── MOTION DETECTION (works with glasses, any skin tone, any lighting) ────
+  // ─── MOTION DETECTION (toggle on motion gesture) ────
   useEffect(() => {
     const interval = setInterval(() => {
       const video = videoRef.current
@@ -116,14 +120,13 @@ export default function Home() {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) return
 
-      // Use small canvas for speed
+      // Small canvas for speed
       canvas.width = 80
       canvas.height = 120
 
       ctx.drawImage(video, 0, 0, 80, 120)
 
-      // Sample center zone where nose/hand would be
-      // x: 25%-75% of width, y: 30%-65% of height
+      // Detection zone (where nose/hand would be)
       const rx = 20, ry = 36, rw = 40, rh = 36
       let imageData: ImageData
       try {
@@ -151,47 +154,27 @@ export default function Home() {
 
       const avgMotion = diff / total
 
-      // Save current frame
-      prevFrameData.current = new Uint8ClampedArray(current)
-
       // Rolling average of last 5 frames
       motionHistory.current.push(avgMotion)
       if (motionHistory.current.length > 5) motionHistory.current.shift()
       const smoothMotion = motionHistory.current.reduce((a, b) => a + b, 0) / motionHistory.current.length
 
+      // Save current frame
+      prevFrameData.current = new Uint8ClampedArray(current)
+
       // Debug
       if (showDebug) {
-        setDebugInfo({ motion: Math.round(smoothMotion), stable: stableFrames.current, state: lastNoseState.current ? 'COVERED' : 'open' })
+        setDebugInfo({ motion: Math.round(smoothMotion), state: isActiveRef.current ? 'active' : 'idle' })
       }
 
-      // Logic:
-      // - HIGH motion (>12) = hand moving in front → covered
-      // - LOW motion (<4) for 8+ frames = stable = hand removed or not there
-      //
-      // This detects the GESTURE of bringing hand to nose and holding still
-
-      if (!lastNoseState.current) {
-        // Currently NOT covered
-        if (smoothMotion > 12) {
-          // Hand moving in = activate immediately
-          stableFrames.current = 0
-          lastNoseState.current = true
-          activateCats()
-        }
-      } else {
-        // Currently COVERED
-        if (smoothMotion < 4) {
-          stableFrames.current++
-          // Must be still for 10 frames (~800ms) to confirm hand removed
-          if (stableFrames.current > 10) {
-            lastNoseState.current = false
-            stableFrames.current = 0
-            deactivateCats()
-            prevFrameData.current = null
-            motionHistory.current = []
-          }
+      // Toggle logic: motion > threshold -> toggle cats on/off (with cooldown)
+      const now = Date.now()
+      if (smoothMotion > MOTION_THRESH && now - lastToggleTime.current > COOLDOWN_MS) {
+        lastToggleTime.current = now
+        if (isActiveRef.current) {
+          deactivateCats()
         } else {
-          stableFrames.current = 0
+          activateCats()
         }
       }
     }, 80)
@@ -266,7 +249,7 @@ export default function Home() {
         {!isActive && (
           <div className="nose-guide">
             <div className="nose-box" />
-            <span className="nose-label">👃 taruh tangan di sini</span>
+            <span className="nose-label">👃 Gerakkan tangan di sini</span>
           </div>
         )}
 
@@ -294,7 +277,6 @@ export default function Home() {
             padding: '6px 10px', borderRadius: 8, fontFamily: 'monospace'
           }}>
             <div>motion: {debugInfo.motion}</div>
-            <div>stable: {debugInfo.stable}/10</div>
             <div>state: {debugInfo.state}</div>
           </div>
         )}
@@ -308,12 +290,12 @@ export default function Home() {
       </div>
 
       <div className={`status-badge ${isActive ? 'on' : 'off'}`}>
-        {isActive ? '🐱 AKTIF!' : '😶 Tutup hidung...'}
+        {isActive ? '🐱 AKTIF!' : '😶 Gerakkan tangan...'}
       </div>
 
       <div className="title-wrap">
         <div className="title-main">KICAU MANIA</div>
-        <div className="title-sub">Tutup hidungmu 👃→🤫</div>
+        <div className="title-sub">Gerakkan tangan di kotak 👃→🤚</div>
       </div>
 
       {isActive && (
