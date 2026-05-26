@@ -129,13 +129,17 @@ export default function Home() {
   
     noseClosed.current = nowClosed
   
-    if (nowClosed !== lastNoseState.current) {
-      lastNoseState.current = nowClosed
-      if (nowClosed) {
-        activateCats()
-      } else {
-        deactivateCats()
-      }
+    if (nowClosed && !lastNoseState.current) {
+      // Nose just covered → activate
+      lastNoseState.current = true
+      activateCats()
+    } else if (!nowClosed && lastNoseState.current) {
+      // Nose released → stop everything, reset for next person
+      lastNoseState.current = false
+      deactivateCats()
+      // Reset baseline so next person gets fresh calibration
+      baselineSkin.current = null
+      calibrationFrames.current = 0
     }
   }, [])
 
