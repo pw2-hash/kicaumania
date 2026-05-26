@@ -18,9 +18,12 @@ interface CatInstance {
 
 let catIdCounter = 0
 
-// Sensitivity configuration – adjust these if needed
-const MOTION_THRESH = 10       // Lower = more sensitive, higher = less sensitive
-const COOLDOWN_MS = 500        // Milliseconds to wait before allowing another toggle
+// Sensitivity – adjust if needed
+const MOTION_THRESH = 12       // Motion above this = hand moving
+const STILL_THRESH = 4         // Motion below this = hand held still
+const STABLE_FRAMES_REQUIRED = 6  // How many frames of stillness to confirm "closed"
+
+type GestureState = 'waiting_cover' | 'covered' | 'waiting_open'
 
 export default function Home() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -30,7 +33,8 @@ export default function Home() {
   const isActiveRef = useRef(false)
   const prevFrameData = useRef<Uint8ClampedArray | null>(null)
   const motionHistory = useRef<number[]>([])
-  const lastToggleTime = useRef(0)
+  const gestureState = useRef<GestureState>('waiting_cover')
+  const stableCounter = useRef(0)
 
   const [isActive, setIsActive] = useState(false)
   const [cats, setCats] = useState<CatInstance[]>([])
@@ -110,7 +114,7 @@ export default function Home() {
     setCats([])
   }, [])
 
-  // ─── MOTION DETECTION (toggle on motion gesture) ────
+  // ─── GESTURE: CLOSE THEN OPEN NOSE ────
   useEffect(() => {
     const interval = setInterval(() => {
       const video = videoRef.current
@@ -120,13 +124,11 @@ export default function Home() {
       const ctx = canvas.getContext('2d', { willReadFrequently: true })
       if (!ctx) return
 
-      // Small canvas for speed
       canvas.width = 80
       canvas.height = 120
-
       ctx.drawImage(video, 0, 0, 80, 120)
 
-      // Detection zone (where nose/hand would be)
+      // Center detection zone (nose area)
       const rx = 20, ry = 36, rw = 40, rh = 36
       let imageData: ImageData
       try {
@@ -140,7 +142,6 @@ export default function Home() {
         return
       }
 
-      // Calculate pixel difference between frames
       const prev = prevFrameData.current
       let diff = 0
       const total = current.length / 4
@@ -153,36 +154,60 @@ export default function Home() {
       }
 
       const avgMotion = diff / total
-
-      // Rolling average of last 5 frames
       motionHistory.current.push(avgMotion)
       if (motionHistory.current.length > 5) motionHistory.current.shift()
       const smoothMotion = motionHistory.current.reduce((a, b) => a + b, 0) / motionHistory.current.length
 
-      // Save current frame
       prevFrameData.current = new Uint8ClampedArray(current)
 
-      // Debug
       if (showDebug) {
-        setDebugInfo({ motion: Math.round(smoothMotion), state: isActiveRef.current ? 'active' : 'idle' })
+        setDebugInfo({ motion: Math.round(smoothMotion), state: gestureState.current })
       }
 
-      // Toggle logic: motion > threshold -> toggle cats on/off (with cooldown)
-      const now = Date.now()
-      if (smoothMotion > MOTION_THRESH && now - lastToggleTime.current > COOLDOWN_MS) {
-        lastToggleTime.current = now
-        if (isActiveRef.current) {
-          deactivateCats()
-        } else {
-          activateCats()
-        }
+      // Gesture state machine
+      switch (gestureState.current) {
+        case 'waiting_cover':
+          // If strong motion detected → hand moving in to cover
+          if (smoothMotion > MOTION_THRESH) {
+            gestureState.current = 'covered'
+            stableCounter.current = 0
+          }
+          break
+
+        case 'covered':
+          // After motion, wait for hand to become still (holding over nose)
+          if (smoothMotion < STILL_THRESH) {
+            stableCounter.current++
+            if (stableCounter.current >= STABLE_FRAMES_REQUIRED) {
+              // Hand is now still covering nose → move to waiting for open
+              gestureState.current = 'waiting_open'
+              stableCounter.current = 0
+            }
+          } else {
+            stableCounter.current = 0 // still moving, reset counter
+          }
+          break
+
+        case 'waiting_open':
+          // Now waiting for hand to move away (motion again)
+          if (smoothMotion > MOTION_THRESH) {
+            // Complete gesture: close then open → trigger toggle
+            if (isActiveRef.current) {
+              deactivateCats()
+            } else {
+              activateCats()
+            }
+            gestureState.current = 'waiting_cover'
+            stableCounter.current = 0
+          }
+          break
       }
     }, 80)
 
     return () => clearInterval(interval)
   }, [activateCats, deactivateCats, showDebug])
 
-  // Animate cats
+  // Animate cats (unchanged)
   useEffect(() => {
     let frame: number
     let lastBeat = 0
@@ -219,7 +244,7 @@ export default function Home() {
     return () => cancelAnimationFrame(frame)
   }, [isActive, spawnCats])
 
-  // Music loop 0:04 → 0:14
+  // Music loop
   useEffect(() => {
     const audio = audioRef.current
     if (!audio) return
@@ -245,14 +270,6 @@ export default function Home() {
         {flashColor && <div className="flash" style={{ background: flashColor }} />}
         <div className={`cam-border ${isActive ? 'active' : ''} ${beatPulse ? 'beat' : ''}`} />
 
-        {/* Detection zone indicator */}
-        {!isActive && (
-          <div className="nose-guide">
-            <div className="nose-box" />
-            <span className="nose-label">👃 Gerakkan tangan di sini</span>
-          </div>
-        )}
-
         {cats.map(cat => (
           <div
             key={cat.id}
@@ -269,7 +286,6 @@ export default function Home() {
           </div>
         ))}
 
-        {/* Debug overlay */}
         {showDebug && (
           <div style={{
             position: 'absolute', bottom: 70, left: 10, zIndex: 99,
@@ -290,12 +306,12 @@ export default function Home() {
       </div>
 
       <div className={`status-badge ${isActive ? 'on' : 'off'}`}>
-        {isActive ? '🐱 AKTIF!' : '😶 Gerakkan tangan...'}
+        {isActive ? '🐱 AKTIF!' : '😶 Tutup lalu buka hidung'}
       </div>
 
       <div className="title-wrap">
         <div className="title-main">KICAU MANIA</div>
-        <div className="title-sub">Gerakkan tangan di kotak 👃→🤚</div>
+        <div className="title-sub">Tutup hidung dengan tangan, lalu buka</div>
       </div>
 
       {isActive && (
@@ -344,27 +360,6 @@ export default function Home() {
         }
         .cam-border.active.beat {
           box-shadow: inset 0 0 50px rgba(255,45,120,0.45), 0 0 60px rgba(255,45,120,0.8);
-        }
-        .nose-guide {
-          position: absolute; top: 30%; left: 25%; width: 50%; height: 25%;
-          z-index: 8; display: flex; flex-direction: column;
-          align-items: center; justify-content: center; gap: 8px;
-        }
-        .nose-box {
-          width: 100%; height: 100%;
-          border: 2px dashed rgba(0,255,225,0.5);
-          border-radius: 12px;
-          box-shadow: inset 0 0 20px rgba(0,255,225,0.05);
-          animation: nosePulse 2s ease-in-out infinite;
-        }
-        @keyframes nosePulse {
-          0%, 100% { border-color: rgba(0,255,225,0.3); }
-          50% { border-color: rgba(0,255,225,0.8); }
-        }
-        .nose-label {
-          position: absolute; bottom: -26px;
-          color: rgba(0,255,225,0.7); font-size: 11px;
-          white-space: nowrap; letter-spacing: 0.05em;
         }
         .cat-wrap {
           position: absolute; transform-origin: center center;
