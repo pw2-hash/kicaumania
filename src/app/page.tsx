@@ -97,37 +97,35 @@ export default function Home() {
     } catch { return }
   
     const data = imageData.data
-    let skinPixels = 0
+    let brightness = 0
     const total = data.length / 4
   
     for (let i = 0; i < data.length; i += 4) {
-      const r = data[i], g = data[i + 1], b = data[i + 2]
-      const isSkin =
-        r > 80 && g > 40 && b > 20 &&
-        r > g && r > b &&
-        Math.abs(r - g) > 15 &&
-        r - b > 20 &&
-        r < 240
-      if (isSkin) skinPixels++
+      brightness += (data[i] + data[i + 1] + data[i + 2]) / 3
     }
+    const avgBrightness = brightness / total
   
-    const skinRatio = skinPixels / total
-  
-    // Calibrate baseline (first 20 frames = your normal face)
-    if (calibrationFrames.current < 20) {
+    // Build stable baseline over first 40 frames (no touching)
+    if (calibrationFrames.current < 40) {
       calibrationFrames.current++
       if (baselineSkin.current === null) {
-        baselineSkin.current = skinRatio
+        baselineSkin.current = avgBrightness
       } else {
-        // Running average
-        baselineSkin.current = baselineSkin.current * 0.85 + skinRatio * 0.15
+        baselineSkin.current = baselineSkin.current * 0.9 + avgBrightness * 0.1
       }
       return
     }
   
-    // Detect only if skin ratio JUMPS above baseline by 0.18+
-    const baseline = baselineSkin.current ?? 0.5
-    const nowClosed = skinRatio > baseline + 0.18
+    // Slowly update baseline when NOT covered (prevents drift)
+    const baseline = baselineSkin.current ?? avgBrightness
+    
+    // Hand covering nose = brightness DROPS significantly (darker)
+    const nowClosed = avgBrightness < baseline - 30
+  
+    // Update baseline slowly only when not triggered
+    if (!nowClosed) {
+      baselineSkin.current = baseline * 0.98 + avgBrightness * 0.02
+    }
   
     noseClosed.current = nowClosed
   
