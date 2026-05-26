@@ -37,6 +37,8 @@ export default function Home() {
   // We detect if a hand is near the nose region using skin tone + position
   const noseClosed = useRef(false)
   const lastNoseState = useRef(false)
+  const baselineSkin = useRef<number | null>(null)
+  const calibrationFrames = useRef(0)
 
   // ─── Start camera ─────────────────────────────────────────────────────────
   const startCamera = useCallback(async (facingMode: 'user' | 'environment') => {
@@ -74,52 +76,61 @@ export default function Home() {
     const video = videoRef.current
     const canvas = canvasRef.current
     if (!video || !canvas || video.readyState < 2) return
-
+  
     const ctx = canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return
-
+  
     canvas.width = video.videoWidth || 640
     canvas.height = video.videoHeight || 480
-
     ctx.drawImage(video, 0, 0, canvas.width, canvas.height)
-
-    // Sample the nose region (center ~30% width, ~35-55% height)
+  
     const w = canvas.width
     const h = canvas.height
     const rx = Math.floor(w * 0.35)
     const ry = Math.floor(h * 0.35)
     const rw = Math.floor(w * 0.30)
     const rh = Math.floor(h * 0.22)
-
+  
     let imageData: ImageData
     try {
       imageData = ctx.getImageData(rx, ry, rw, rh)
-    } catch {
-      return
-    }
-
+    } catch { return }
+  
     const data = imageData.data
     let skinPixels = 0
     const total = data.length / 4
-
+  
     for (let i = 0; i < data.length; i += 4) {
       const r = data[i], g = data[i + 1], b = data[i + 2]
-      // Skin tone heuristic (works in various lighting)
       const isSkin =
         r > 80 && g > 40 && b > 20 &&
         r > g && r > b &&
         Math.abs(r - g) > 15 &&
         r - b > 20 &&
         r < 240
-
       if (isSkin) skinPixels++
     }
-
+  
     const skinRatio = skinPixels / total
-    // If > 55% of nose zone is skin = hand covering nose
-    const nowClosed = skinRatio > 0.25
+  
+    // Calibrate baseline (first 20 frames = your normal face)
+    if (calibrationFrames.current < 20) {
+      calibrationFrames.current++
+      if (baselineSkin.current === null) {
+        baselineSkin.current = skinRatio
+      } else {
+        // Running average
+        baselineSkin.current = baselineSkin.current * 0.85 + skinRatio * 0.15
+      }
+      return
+    }
+  
+    // Detect only if skin ratio JUMPS above baseline by 0.18+
+    const baseline = baselineSkin.current ?? 0.5
+    const nowClosed = skinRatio > baseline + 0.18
+  
     noseClosed.current = nowClosed
-
+  
     if (nowClosed !== lastNoseState.current) {
       lastNoseState.current = nowClosed
       if (nowClosed) {
