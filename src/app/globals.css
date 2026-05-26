@@ -1,0 +1,28 @@
+@import url('https://fonts.googleapis.com/css2?family=Boogaloo&family=Nunito:wght@400;700;900&display=swap');
+
+:root {
+  --bg: #0a0a0f;
+  --neon-pink: #ff2d78;
+  --neon-cyan: #00ffe1;
+  --neon-yellow: #ffe600;
+  --neon-purple: #c93fff;
+  --cat-glow: rgba(255, 45, 120, 0.6);
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  font-family: 'Nunito', sans-serif;
+  user-select: none;
+}
+
+#__next {
+  height: 100%;
+}
